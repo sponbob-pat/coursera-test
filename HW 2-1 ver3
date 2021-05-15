@@ -1,0 +1,592 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <string.h>
+#include <limits.h>
+
+#define FALSE 0
+#define TRUE 1
+
+#define offsetof(TYPE, MEMBER) ((size_t) &((TYPE *)0)->MEMBER)
+
+#define container_of(ptr, type, member) ({                      \
+        const typeof( ((type *)0)->member ) *__mptr = (ptr);    \
+        (type *)( (char *)__mptr - offsetof(type,member) );})
+
+#define LIST_POISON1  ((void *) 0x00100100)
+#define LIST_POISON2  ((void *) 0x00200200)
+
+struct list_head {
+	struct list_head *next, *prev;
+};
+
+#define LIST_HEAD_INIT(name) { &(name), &(name) }
+
+#define LIST_HEAD(name) \
+	struct list_head name = LIST_HEAD_INIT(name)
+
+#define INIT_LIST_HEAD(ptr) do { \
+	(ptr)->next = (ptr); (ptr)->prev = (ptr); \
+} while (0)
+
+static inline void __list_add(struct list_head *new,
+			      struct list_head *prev,
+			      struct list_head *next) {
+	next->prev = new;
+	new->next = next;
+	new->prev = prev;
+	prev->next = new;
+}
+
+static inline void list_add(struct list_head *new, struct list_head *head) {
+	__list_add(new, head, head->next);
+}
+
+static inline void list_add_tail(struct list_head *new, struct list_head *head) {
+	__list_add(new, head->prev, head);
+}
+
+static inline void __list_del(struct list_head * prev, struct list_head * next) {
+	next->prev = prev;
+	prev->next = next;
+}
+
+static inline void list_del(struct list_head *entry) {
+	__list_del(entry->prev, entry->next);
+	entry->next = LIST_POISON1;
+	entry->prev = LIST_POISON2;
+}
+
+static inline void list_del_init(struct list_head *entry) {
+	__list_del(entry->prev, entry->next);
+	INIT_LIST_HEAD(entry);
+}
+
+static inline void list_move(struct list_head *list, struct list_head *head) {
+        __list_del(list->prev, list->next);
+        list_add(list, head);
+}
+
+static inline void list_move_tail(struct list_head *list,
+				  struct list_head *head) {
+        __list_del(list->prev, list->next);
+        list_add_tail(list, head);
+}
+
+/**
+ * list_is_last - tests whether @list is the last entry in list @head
+ * @list: the entry to test
+ * @head: the head of the list
+ */
+static inline int list_is_last(const struct list_head *list,
+				const struct list_head *head)
+{
+	return list->next == head;
+}
+
+static inline int list_empty(const struct list_head *head) {
+	return head->next == head;
+}
+
+#define list_entry(ptr, type, member) \
+	container_of(ptr, type, member)
+
+#define list_first_entry(ptr, type, member) \
+	list_entry((ptr)->next, type, member)
+
+#define list_next_entry(pos, member) \
+	list_entry((pos)->member.next, typeof(*(pos)), member)
+
+#define list_for_each(pos, head) \
+  for (pos = (head)->next; pos != (head);	\
+       pos = pos->next)
+
+#define list_for_each_prev(pos, head) \
+	for (pos = (head)->prev; prefetch(pos->prev), pos != (head); \
+        	pos = pos->prev)
+
+#define list_for_each_safe(pos, n, head) \
+	for (pos = (head)->next, n = pos->next; pos != (head); \
+		pos = n, n = pos->next)
+
+#define list_for_each_entry(pos, head, member)				\
+	for (pos = list_entry((head)->next, typeof(*pos), member);	\
+	     &pos->member != (head);					\
+	     pos = list_entry(pos->member.next, typeof(*pos), member))
+
+#define list_for_each_entry_reverse(pos, head, member)			\
+	for (pos = list_entry((head)->prev, typeof(*pos), member);	\
+	     &pos->member != (head); 	\
+	     pos = list_entry(pos->member.prev, typeof(*pos), member))
+
+#define list_for_each_entry_safe(pos, n, head, member)			\
+	for (pos = list_entry((head)->next, typeof(*pos), member),	\
+		n = list_entry(pos->member.next, typeof(*pos), member);	\
+	     &pos->member != (head); 					\
+	     pos = n, n = list_entry(n->member.next, typeof(*n), member))
+
+#define list_for_each_entry_safe_reverse(pos, n, head, member)		\
+	for (pos = list_entry((head)->prev, typeof(*pos), member),	\
+		n = list_entry(pos->member.prev, typeof(*pos), member);	\
+	     &pos->member != (head); 					\
+	     pos = n, n = list_entry(n->member.prev, typeof(*n), member))
+  
+
+#if 0    //DEBUG
+#define debug(fmt, args...) fprintf(stderr, fmt, ##args)
+#else
+#define debug(fmt, args...)
+#endif
+
+typedef struct {
+    unsigned char operation; // tuple의 operation
+    unsigned char length;    // 해당 연산의 길이 
+    int isCompleted;         // 해당 튜플이 동작이 완료되었는지 표시
+    struct list_head tuple_list; // tuple을 통해 리스트를 만들 변수
+    int op_clock;
+} tuple;
+
+typedef struct{
+    int pid;            // ID
+    int arrival_time;   // 도착시간
+    int code_bytes;     // 코드길이
+    struct list_head job, readyRT, readyNorm, readyIdle, run, terminated;
+    struct list_head tuple_list;  // tuple을 가리키는 변수
+    int pc;
+    int priority;
+} process;
+
+typedef struct{
+    int pid;            // ID
+    int arrival_time;   // 도착시간
+    int code_bytes;     // 코드길이
+    int pc;
+    int priority;
+} pcb_Proc;
+
+pcb_Proc pcb_arr[101]; // pcb를 담을 배열
+                       // 0번 index에는 0번 프로세스 , 80번 index에는 80번 프로세스를 담는다.
+
+pcb_Proc pcbsaving(process *p1){
+
+    pcb_Proc pcb1;
+
+    pcb1.pid = p1->pid; 
+    pcb1.arrival_time = p1->arrival_time; 
+    pcb1.code_bytes = p1->code_bytes; 
+    pcb1.pc = p1->pc; 
+    pcb1.priority = p1->priority; 
+    pcb_arr[pcb1.pid] = pcb1;
+
+    return pcb_arr[pcb1.pid];
+}
+
+int main(int argc, char* argv[]) {
+    
+    process data; // process에 있는 내용을 읽기위한 변수
+    tuple tuple_ex; // tuple에 있는 내용을 읽기위한 변수
+
+    process *real_proc, *next_real; 
+    tuple *real_tuple;
+
+    LIST_HEAD(job_q); // process를 연결할 리스트의 이름, job_q
+    
+    while (fread(&data, sizeof(int) * 3, 1, stdin) != 0) {
+        real_proc = malloc(sizeof(*real_proc));
+
+        real_proc->pid = data.pid;
+        real_proc->arrival_time = data.arrival_time;
+        real_proc->code_bytes = data.code_bytes;  
+        real_proc->pc = 0;
+        if(real_proc->pid >= 80 && real_proc->pid <= 99){
+            real_proc->priority = 1;
+        } // Real_time 프로세스는 가장 높은 우선순위 1
+
+        else real_proc->priority = 2;
+         // normal 프로세스는 중간 우선순위
+
+        // fread에서 읽은 3개의 int형 자료를 각각 
+        // pid, 도착시간, 코드길이로 입력한다.      
+
+        INIT_LIST_HEAD(&real_proc->job); // job
+        INIT_LIST_HEAD(&real_proc->tuple_list);
+        list_add_tail(&real_proc->job, &job_q);
+        // job과 tuple_list를 사용하기 전에 초기화를 한 다음
+        // job은 앞에서 선언했던 head였던 job_q에 추가해준다.
+
+        for (int clock = 0; clock < ((data.code_bytes) / 2); clock++) {
+            real_tuple = malloc(sizeof(*real_tuple));
+            fread(&tuple_ex, sizeof(unsigned char) * 2, 1, stdin);
+
+            real_tuple->operation = tuple_ex.operation;
+            real_tuple->length = tuple_ex.length;
+            real_tuple->op_clock = 0;
+            // fread에서 읽은 unsigned char형 2개의 자료를 각각
+            // operation, length로 입력한다.
+            real_tuple->isCompleted = FALSE; // 기본 설정.
+
+            INIT_LIST_HEAD(&real_tuple->tuple_list);
+            list_add_tail(&real_tuple->tuple_list, &real_proc->tuple_list);
+            // 여기서는 process 구조체에서 선언한 멤버 변수인 tuple_list에 
+            // 코드의 내용들을 각각 추가할 것이다. 
+            // 그래서 real_proc->tuple_list를 head로 취급해서 이곳에 추가했다.
+        }
+    }
+    // idle 프로세스 추가 
+    process *idle_proc; 
+    tuple *idle_tuple;
+
+    
+    idle_proc = malloc(sizeof(process));
+
+    idle_proc->pid = 100;
+    idle_proc->arrival_time = 0;
+    idle_proc->code_bytes = 2;
+    idle_proc->pc = 0;
+    idle_proc->priority = 3;
+    // idle 프로세스는 가장 낮은 우선순위 3
+
+    INIT_LIST_HEAD(&idle_proc->job); // job
+    INIT_LIST_HEAD(&idle_proc->tuple_list);
+    list_add_tail(&idle_proc->job, &job_q);
+
+    idle_tuple = malloc(sizeof(*idle_tuple));
+    
+    idle_tuple->operation = 255;
+    idle_tuple->length = 0;
+    idle_tuple->isCompleted = FALSE;
+    idle_tuple->op_clock = 0;
+
+    INIT_LIST_HEAD(&idle_tuple->tuple_list);
+    list_add_tail(&idle_tuple->tuple_list, &idle_proc->tuple_list);
+
+    LIST_HEAD(ready_q_RT);
+    process *readyRT_proc; // ready_q 중에서 real-time 클래스
+    tuple* readyRT_tuple;  
+
+    LIST_HEAD(ready_q_Norm);
+    process *readyNorm_proc; // ready_q 중에서 normal 클래스
+    tuple* readyNorm_tuple;  
+
+    LIST_HEAD(ready_q_Idle);
+    process *readyIdle_proc; // ready_q 중에서 idle 클래스
+    tuple* readyIdle_tuple;  
+
+    LIST_HEAD(running_q);
+    process *running_proc, *next_run, *running_proc_tmp; // running_q
+    tuple* running_tuple;  
+    struct list_head *running_temp;
+
+    LIST_HEAD(terminated_q);
+    process *terminated_proc, * terminated_temp; // running이 다 끝난 프로세스를 저장하는 리스트
+    tuple* terminated_tuple;  
+   
+    int clock = 0;      // clock의 역할을 하는 변수
+
+    pcb_Proc beforepcb; // pcb 역할을 하는 프로세스
+
+    beforepcb.pid = 500;
+    int iter_cnt = 0;
+    int switch_flag = FALSE; // FALSE이면 switch가 아니고 TRUE이면 switch 중이다.
+    
+    process * proc_preempt;
+
+    process * job_q_tmp;
+    int job_q_cnt = 0;
+    list_for_each_entry(job_q_tmp, &job_q, job){
+        job_q_cnt++;
+    } 
+
+    
+    // printf("Job_q 개수 = %d\n", job_q_cnt);
+
+    while(1){
+        // 이 부분을 통해서 running_q에 있는 원소들 중에서 가장 우선순위가 높은 걸 찾을 수 있다.
+
+        // 허점... clock이 0일 때 maxPrior의 값이 100이 된다. 이때도... 2이 되야 하는데...
+        int maxPrior = 100;
+        int maxProc_pid;
+        list_for_each_entry_safe(running_proc_tmp, next_run, &running_q, run){
+            // if(clock == 0) maxPrior = 2;
+            
+            if(maxPrior > running_proc_tmp->priority) {
+                maxPrior = running_proc_tmp->priority;       
+                maxProc_pid = running_proc_tmp->pid;   
+            }
+            
+        } 
+
+        // 맨 처음에는 clock이 0일 때
+        // running_q에 아무것도 없으니까 maxPrior는 그대로 100이 된다.
+        if(clock == 0) {
+            maxPrior = 2; 
+            maxProc_pid = 0;
+        }
+
+
+
+        list_for_each_entry_safe(running_proc_tmp, next_run, &running_q, run){
+            if(running_proc_tmp->pid == maxProc_pid){
+                if(beforepcb.pid != 500 && beforepcb.pid != running_proc_tmp->pid){          
+                    clock +=4;
+                    // 4만 증가시킨 이유는... 저 밑에 있는 running_q에서 다 동작을 하고나서
+                    // clock ++을 지나
+                    // 이곳에 오기 때문에 4만 증가시킨 것이다.
+                    // 그래서 총 5 clock의 overhead가 발생하도록 했다.
+                    printf("%04d CPU: Switched\tfrom: %03d\tto: %03d\n", clock, beforepcb.pid, running_proc_tmp->pid);
+                }
+            }
+        }  
+        // job_q에서 arrival time에 맞춰서 ready_q에 넣어줄 때
+        // 우선순위에 따라서 다르게 넣어줘야 한다. 가장 높은 우선순위는 1, 2, 3 순이다.
+        // 여기서 이전과 같이 arrival time과 똑같다고 무조건 넣어주는게 아니라
+        // context switching을 하면서 걸리는 시간이 다 지난 후에 넣어주는 것도 고려해야 한다. ==> 그래서 clock이 도착시간 보다 크거나 같을 때만 ready_q에 들어가도록 했다.    
+            list_for_each_entry_safe(real_proc, next_real ,&job_q, job){
+            if(real_proc->arrival_time <= clock && real_proc->priority == 1) {
+                    INIT_LIST_HEAD(&real_proc->readyRT);
+                    list_add_tail(&real_proc->readyRT, &ready_q_RT) ;
+                    printf("%04d CPU: Loaded PID: %03d\tArrival: %03d\tCodesize: %03d\tPC: %03d\n", clock, real_proc->pid, real_proc->arrival_time, real_proc->code_bytes, 0);
+                    list_del(&real_proc->job);
+                    
+            }  
+            else if(real_proc->arrival_time <= clock && real_proc->priority == 2) {
+                    INIT_LIST_HEAD(&real_proc->readyNorm);
+                    list_add_tail(&real_proc->readyNorm, &ready_q_Norm);
+                    printf("%04d CPU: Loaded PID: %03d\tArrival: %03d\tCodesize: %03d\tPC: %03d\n", clock, real_proc->pid, real_proc->arrival_time, real_proc->code_bytes, 0);
+                    list_del(&real_proc->job);
+                    
+            }  
+            else if(real_proc->arrival_time <= clock && real_proc->priority == 3) {
+                    INIT_LIST_HEAD(&real_proc->readyIdle);
+                    list_add_tail(&real_proc->readyIdle, &ready_q_Idle);
+                    printf("%04d CPU: Loaded PID: %03d\tArrival: %03d\tCodesize: %03d\tPC: %03d\n", clock, real_proc->pid, real_proc->arrival_time, real_proc->code_bytes, 0);
+                    list_del(&real_proc->job);
+            }        
+            }
+        
+            
+        
+        // 비어있다면 1을 출력한다. 비어있지 않았다면 0을 출력한다.
+        // 즉, list_empty의 출력값이 0이면 그 안에 있는
+        if(list_empty(&ready_q_RT) == 0) {
+            process *tempRT = list_first_entry(&ready_q_RT, typeof(*tempRT), readyRT);
+            INIT_LIST_HEAD(&tempRT->run);
+            list_add_tail(&tempRT->run, &running_q);
+            //printf("%04d RT process(PId = %04d) enter into ReadyRT\n", clock, tempRT->pid);
+            list_del(&tempRT->readyRT);
+            
+            // running_q에 넣고 readyRT에서 삭제하기
+        }
+        
+        else if(list_empty(&ready_q_Norm) == 0) {
+            process *tempNorm = list_first_entry(&ready_q_Norm, typeof(*tempNorm), readyNorm);
+            INIT_LIST_HEAD(&tempNorm->run);
+            list_add_tail(&tempNorm->run, &running_q);
+            //printf("%04d Norm process(PId = %04d) enter into ReadyNorm\n", clock, tempNorm->pid);
+            list_del(&tempNorm->readyNorm);
+            // running_q에 넣고 readyNorm에서 삭제하기
+        }
+        
+        else if(list_empty(&ready_q_Idle) == 0) {
+            process *tempIdle = list_first_entry(&ready_q_Idle, typeof(*tempIdle), readyIdle);
+            INIT_LIST_HEAD(&tempIdle->run);
+            list_add_tail(&tempIdle->run, &running_q);
+            //printf("%04d IDLE process(PId = %04d) enter into ReadyIDLE\n", clock, tempIdle->pid);
+            list_del(&tempIdle->readyIdle);
+            // running_q에 넣고 readyIdle에서 삭제하기
+        }
+        // 3개의 if문을 통해서 각 클래스별로 프로세스를 넣는것 까지 확인
+
+        // 이제 running을 해볼 차례입니다.
+   
+        // list_for_each_entry(proc_preempt, &running_q, run){} //이걸 추가하면 0번 프로세스가 1 clock 늦게 동작한다.==> 해결
+        // 왜 그럴까??
+        // 이유는 모르겠으니 preemption 됐을 때 좀 어떻게 해보자.
+        // 어떻게 해야 running_q에 우선순위가 가장 높은 프로세스를 최신화할 수 있나.
+        // 해답: clock = 0일 때, maxProc_pid의 값이 garbage 값이 되더라~~
+
+        // ready_q에서 최신 노드는 running_q의 tail 부분에 들어오도록 했다.
+
+        list_for_each_entry_safe(running_proc, next_run, &running_q, run){
+
+            // process *termQQ = list_entry((&terminated_q)->next, typeof(*termQQ), terminated); // 얘는 running_q의 header의 pid값
+            // printf("%04d What's in running_q? PID = %04d\n", clock, running_proc->pid);
+            
+            // 지금 가리키고 있는 running_proc의 pid가 
+            // running_q안에 있는 프로세스 중 가장 높은 우선순위를 가지는 프로세스일 때 수행하도록 함.
+            if(running_proc->pid == maxProc_pid){
+                list_for_each(running_temp, &running_proc->tuple_list){
+                running_tuple = list_entry(running_temp, tuple, tuple_list);
+
+                // 100번 프로세스가 run일 때 곧바로 끝나도록 했다.
+                if(running_tuple->operation  == 255){
+                    INIT_LIST_HEAD(&running_proc->terminated);
+                    list_add_tail(&running_proc->terminated, &terminated_q);
+                    beforepcb = pcbsaving(running_proc);
+                    list_del(&running_proc->run);
+                }
+
+                else if(running_tuple->operation == 0
+                 &&(running_tuple->op_clock != running_tuple->length)){
+                    // 여기서 우선순위가 높은 프로세스가 running_q에 들어온다면 동작을 안하도록 해야 하는데...
+                    // 동작을 하는 바람에 1번 프로세스가 1 clock 빨리 진행된다. 
+                    // 왜냐하면, 우선순위를 반복문의 맨 앞에서 결정하면서 clock = 40일 때
+                    // 우선순위가 2인 상황이고 코드가 진행되면서 분명히 우선순위가 높은 81번 프로세스가 들어왔음에도
+                    // run_q의 최대 우선순위가 갱신되지 않으면서 벌어진 상황이다.
+
+                    // 새로 갱신한 우선순위가 기존에 있던 우선순위보다 높거나 같다면                                       
+
+                    int maxPrior2 = 100;
+                    int maxProc_pid2;
+                        
+                    list_for_each_entry(proc_preempt, &running_q, run){
+                        // if(clock == 0) maxPrior = 2;
+                        if(maxPrior2 > proc_preempt->priority) {
+                            maxPrior2 = proc_preempt->priority;       
+                            maxProc_pid2 = proc_preempt->pid;   
+                        }   
+                    } 
+
+                    if(clock == 0){
+                        running_tuple->op_clock++;
+                        beforepcb = pcbsaving(running_proc);              
+                    }
+
+                    else {
+
+                        if(maxPrior2 >= maxPrior){ // 새로 갱신한 우선순위가 더 순위가 낮거나 같을 때만 op_clock이 동작하도록.
+                            running_tuple->op_clock++;
+                            beforepcb = pcbsaving(running_proc); 
+                        }
+                    }
+
+                    // printf("%04d PID = %04d process OP_clock = %04d\n", clock, running_proc->pid, running_tuple->op_clock);
+                    // 아.. 어떻게 하면 real_time process가 있다는 걸 바로 알 수 있지.                 
+                }
+                // running_q에 있는 프로세스를 다 동작하고 나면
+                // 해당 프로세스를 종료하고 terminated로 보낸다.
+                else if((running_tuple->op_clock == running_tuple->length) 
+                && running_tuple->isCompleted == FALSE){
+                    running_proc->pc++;
+                    running_tuple->isCompleted = TRUE;
+                    INIT_LIST_HEAD(&running_proc->terminated);
+                    list_add_tail(&running_proc->terminated, &terminated_q);
+                    printf("%04d CPU: Process is terminated\tPID:%03d\tPC:%03d\n", clock, running_proc->pid, running_proc->pc);
+                    
+                    beforepcb = pcbsaving(running_proc);
+                    list_del(&running_proc->run);   
+                                  
+                }
+                // printf("%04d 나중 PID = %04d\n", clock, running_proc->pid);
+
+                // switch는 끝난다고 바뀌는게 아니다. 
+                // - 프로세스가 끝날때는 바뀌는걸 어찌저찌 구현한건 같다.
+                // 이젠 두 번째 경우를 생각해야 한다.
+                // 프로세스가 바뀔 때는 하나의 프로세스가 끝나거나
+                // preemption 될 때. 이 두 가지 경우를 모두 아울러야 한다.
+                
+                // running_proc이 가리키는 프로세스의 pid를 쭉 보니까
+                // preemption은 구현이 된 것 같다. 이제 switching만 제 시간에 표시되도록 구현해주면 된다.
+
+                
+            }
+                          
+            }
+        }   
+
+
+        clock++;  
+        // 맨 처음의 job_q의 개수와 terminated_q의 개수가 똑같다면 끝낼 수 있지 않을까??
+        process * terminated_q_tmp;
+        int terminated_q_cnt = 0;
+        list_for_each_entry(terminated_q_tmp, &terminated_q, terminated){
+
+            terminated_q_cnt++;
+        } 
+        // printf("%04d terminated_q cnt = %d\n", clock , terminated_q_cnt);
+
+        if(job_q_cnt == terminated_q_cnt) {
+            //printf("이것 때문에 끝!!\n");
+            break;
+        }
+    } // while문의 끝
+
+    // PID 숫자가 큰 순서대로 출력하도록 해야 한다.
+
+
+    process * tmp_term;
+    tuple * tmp_term_tuple;
+    struct list_head *tmp_term_head;
+    int terminated_pid[job_q_cnt];
+    int i = 0;
+
+    list_for_each_entry(tmp_term, &terminated_q, terminated){
+        terminated_pid[i] = tmp_term->pid;
+        i++;
+    }
+    int compare(const void *a, const void* b){
+        if( *(int*)a > *(int*)b ) return -1;
+
+        else if( *(int*)a < *(int*)b ) return 1;
+
+        else return 0;
+    }
+
+    qsort(terminated_pid, job_q_cnt, sizeof(terminated_pid[0]), compare);
+
+    /*for(int j = 0; j < job_q_cnt; j++){
+        printf("끝난 process pid = %d\n", terminated_pid[j]);
+    }*/
+    int cnt = 0;
+    while (cnt < job_q_cnt){
+        list_for_each_entry(tmp_term, &terminated_q, terminated){
+            list_for_each(tmp_term_head, &tmp_term->tuple_list){
+            tmp_term_tuple = list_entry(tmp_term_head, tuple, tuple_list);
+                if(terminated_pid[cnt] == tmp_term->pid){
+                    printf("PID: %03d\tARRIVAL: %03d\tCODESIZE: %03d\tWAITING: %03d\tRESPONSE: %03d\n", tmp_term->pid, tmp_term->arrival_time, tmp_term->code_bytes, 1, 1);
+                }
+                
+            }  
+            
+        }
+        cnt++;
+    }
+
+
+    
+
+
+    free(idle_tuple);
+    free(idle_proc);
+    free(real_tuple);
+    list_for_each_entry(real_proc, &job_q, job){
+        free(real_proc);      
+    }
+
+    return 0;
+} // main의 끝
+
+/*0000 CPU: Loaded PID: 000       Arrival: 000    Codesize: 002   PC: 000
+0000 CPU: Loaded PID: 100       Arrival: 000    Codesize: 002   PC: 000
+0002 CPU: Process is terminated PID:000 PC:001
+0007 CPU: Switched      from: 000       to: 100
+0007 CPU: Loaded PID: 001       Arrival: 004    Codesize: 002   PC: 000
+0007 CPU: Loaded PID: 002       Arrival: 005    Codesize: 002   PC: 000
+0007 CPU: Loaded PID: 080       Arrival: 006    Codesize: 002   PC: 000
+0012 CPU: Switched      from: 100       to: 080
+0022 CPU: Process is terminated PID:080 PC:001
+0027 CPU: Switched      from: 080       to: 001
+0040 CPU: Loaded PID: 081       Arrival: 040    Codesize: 002   PC: 000
+0045 CPU: Switched      from: 001       to: 081
+0055 CPU: Process is terminated PID:081 PC:001
+0060 CPU: Switched      from: 081       to: 001
+0217 CPU: Process is terminated PID:001 PC:001
+0222 CPU: Switched      from: 001       to: 002
+0302 CPU: Process is terminated PID:002 PC:001
+PID: 100        ARRIVAL: 000    CODESIZE: 002   WAITING: 001    RESPONSE: 001
+PID: 081        ARRIVAL: 040    CODESIZE: 002   WAITING: 001    RESPONSE: 001
+PID: 080        ARRIVAL: 006    CODESIZE: 002   WAITING: 001    RESPONSE: 001
+PID: 002        ARRIVAL: 005    CODESIZE: 002   WAITING: 001    RESPONSE: 001
+PID: 001        ARRIVAL: 004    CODESIZE: 002   WAITING: 001    RESPONSE: 001
+PID: 000        ARRIVAL: 000    CODESIZE: 002   WAITING: 001    RESPONSE: 001
+*/
